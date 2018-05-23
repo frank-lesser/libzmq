@@ -57,11 +57,6 @@
 #endif
 
 #if defined ZMQ_HAVE_OSX
-#include <mach/clock.h>
-#include <mach/mach.h>
-#include <time.h>
-#include <sys/time.h>
-
 int alt_clock_gettime (int clock_id, timespec *ts)
 {
     clock_serv_t cclock;
@@ -156,7 +151,7 @@ uint64_t zmq::clock_t::now_us ()
     //  Convert the tick number into the number of seconds
     //  since the system was started.
     double ticks_div = ticksPerSecond.QuadPart / 1000000.0;
-    return (uint64_t) (tick.QuadPart / ticks_div);
+    return static_cast<uint64_t> (tick.QuadPart / ticks_div);
 
 #elif defined HAVE_CLOCK_GETTIME                                               \
   && (defined CLOCK_MONOTONIC || defined ZMQ_HAVE_VXWORKS)

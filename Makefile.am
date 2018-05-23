@@ -83,6 +83,8 @@ src_libzmq_la_SOURCES = \
 	src/io_thread.hpp \
 	src/ip.cpp \
 	src/ip.hpp \
+	src/ip_resolver.cpp \
+	src/ip_resolver.hpp \
 	src/ipc_address.cpp \
 	src/ipc_address.hpp \
 	src/ipc_connecter.cpp \
@@ -468,7 +470,8 @@ tests_test_hwm_LDADD = src/libzmq.la ${UNITY_LIBS}
 tests_test_hwm_CPPFLAGS = ${UNITY_CPPFLAGS}
 
 tests_test_hwm_pubsub_SOURCES = tests/test_hwm_pubsub.cpp
-tests_test_hwm_pubsub_LDADD = src/libzmq.la
+tests_test_hwm_pubsub_LDADD = src/libzmq.la ${UNITY_LIBS}
+tests_test_hwm_pubsub_CPPFLAGS = ${UNITY_CPPFLAGS}
 
 tests_test_reqrep_device_SOURCES = tests/test_reqrep_device.cpp
 tests_test_reqrep_device_LDADD = src/libzmq.la
@@ -570,7 +573,8 @@ tests_test_spec_rep_SOURCES = tests/test_spec_rep.cpp
 tests_test_spec_rep_LDADD = src/libzmq.la
 
 tests_test_spec_dealer_SOURCES = tests/test_spec_dealer.cpp
-tests_test_spec_dealer_LDADD = src/libzmq.la
+tests_test_spec_dealer_LDADD = src/libzmq.la ${UNITY_LIBS}
+tests_test_spec_dealer_CPPFLAGS = ${UNITY_CPPFLAGS}
 
 tests_test_spec_router_SOURCES = tests/test_spec_router.cpp
 tests_test_spec_router_LDADD = src/libzmq.la
@@ -626,7 +630,8 @@ tests_test_capabilities_SOURCES = tests/test_capabilities.cpp
 tests_test_capabilities_LDADD = src/libzmq.la
 
 tests_test_xpub_nodrop_SOURCES = tests/test_xpub_nodrop.cpp
-tests_test_xpub_nodrop_LDADD = src/libzmq.la
+tests_test_xpub_nodrop_LDADD = src/libzmq.la ${UNITY_LIBS}
+tests_test_xpub_nodrop_CPPFLAGS = ${UNITY_CPPFLAGS}
 
 tests_test_xpub_manual_SOURCES = tests/test_xpub_manual.cpp
 tests_test_xpub_manual_LDADD = src/libzmq.la
@@ -649,13 +654,15 @@ tests_test_setsockopt_SOURCES = tests/test_setsockopt.cpp
 tests_test_setsockopt_LDADD = src/libzmq.la
 
 tests_test_heartbeats_SOURCES = tests/test_heartbeats.cpp
-tests_test_heartbeats_LDADD = src/libzmq.la
+tests_test_heartbeats_LDADD = src/libzmq.la ${UNITY_LIBS}
+tests_test_heartbeats_CPPFLAGS = ${UNITY_CPPFLAGS}
 
 tests_test_stream_exceeds_buffer_SOURCES = tests/test_stream_exceeds_buffer.cpp
 tests_test_stream_exceeds_buffer_LDADD = src/libzmq.la
 
 tests_test_pub_invert_matching_SOURCES = tests/test_pub_invert_matching.cpp
-tests_test_pub_invert_matching_LDADD = src/libzmq.la
+tests_test_pub_invert_matching_LDADD = src/libzmq.la ${UNITY_LIBS}
+tests_test_pub_invert_matching_CPPFLAGS = ${UNITY_CPPFLAGS}
 
 tests_test_bind_after_connect_tcp_SOURCES = tests/test_bind_after_connect_tcp.cpp
 tests_test_bind_after_connect_tcp_LDADD = src/libzmq.la ${UNITY_LIBS}
@@ -895,7 +902,9 @@ if ENABLE_STATIC
 test_apps += \
 	unittests/unittest_poller \
 	unittests/unittest_ypipe \
-	unittests/unittest_mtrie
+	unittests/unittest_mtrie \
+	unittests/unittest_ip_resolver \
+	unittests/unittest_udp_address
 
 unittests_unittest_poller_SOURCES = unittests/unittest_poller.cpp
 unittests_unittest_poller_CPPFLAGS = -I$(top_srcdir)/src ${UNITY_CPPFLAGS} $(CODE_COVERAGE_CPPFLAGS)
@@ -917,6 +926,22 @@ unittests_unittest_mtrie_SOURCES = unittests/unittest_mtrie.cpp
 unittests_unittest_mtrie_CPPFLAGS = -I$(top_srcdir)/src ${UNITY_CPPFLAGS} $(CODE_COVERAGE_CPPFLAGS)
 unittests_unittest_mtrie_CXXFLAGS = $(CODE_COVERAGE_CXXFLAGS)
 unittests_unittest_mtrie_LDADD = $(top_builddir)/src/.libs/libzmq.a \
+	${src_libzmq_la_LIBADD} \
+	${UNITY_LIBS} \
+	$(CODE_COVERAGE_LDFLAGS)
+
+unittests_unittest_ip_resolver_SOURCES = unittests/unittest_ip_resolver.cpp unittests/unittest_resolver_common.hpp
+unittests_unittest_ip_resolver_CPPFLAGS = -I$(top_srcdir)/src ${UNITY_CPPFLAGS} $(CODE_COVERAGE_CPPFLAGS)
+unittests_unittest_ip_resolver_CXXFLAGS = $(CODE_COVERAGE_CXXFLAGS)
+unittests_unittest_ip_resolver_LDADD = $(top_builddir)/src/.libs/libzmq.a \
+	${src_libzmq_la_LIBADD} \
+	${UNITY_LIBS} \
+	$(CODE_COVERAGE_LDFLAGS)
+
+unittests_unittest_udp_address_SOURCES = unittests/unittest_udp_address.cpp unittests/unittest_resolver_common.hpp
+unittests_unittest_udp_address_CPPFLAGS = -I$(top_srcdir)/src ${UNITY_CPPFLAGS} $(CODE_COVERAGE_CPPFLAGS)
+unittests_unittest_udp_address_CXXFLAGS = $(CODE_COVERAGE_CXXFLAGS)
+unittests_unittest_udp_address_LDADD = $(top_builddir)/src/.libs/libzmq.a \
 	${src_libzmq_la_LIBADD} \
 	${UNITY_LIBS} \
 	$(CODE_COVERAGE_LDFLAGS)

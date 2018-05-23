@@ -7,6 +7,23 @@ list (INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}")
 set (ZMQ_CMAKE_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/builds/cmake/Modules)
 list (APPEND CMAKE_MODULE_PATH ${ZMQ_CMAKE_MODULES_DIR})
 
+# Apply CMP0042: MACOSX_RPATH is enabled by default
+cmake_policy (SET CMP0042 NEW)
+
+include(GNUInstallDirs)
+if (${CMAKE_SYSTEM_NAME} STREQUAL Darwin)
+  # Find more information: https://cmake.org/Wiki/CMake_RPATH_handling
+
+  # Add an install rpath if it is not a system directory
+  list (FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}" isSystemDir)
+  if ("${isSystemDir}" STREQUAL "-1")
+    set (CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+  endif ()
+
+  # Add linker search paths pointing to external dependencies
+  set (CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif ()
+
 include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-std=gnu++11" COMPILER_SUPPORTS_CXX11)
 if(COMPILER_SUPPORTS_CXX11)
@@ -77,7 +94,10 @@ if (WITH_MILITANT)
     add_definitions(-DZMQ_ACT_MILITANT)
 endif()
 
-set (POLLER "" CACHE STRING "Choose polling system. valid values are
+set (API_POLLER "" CACHE STRING "Choose polling system for zmq_poll(er)_*. valid values are
+                            poll or select [default=poll unless POLLER=select]")
+
+set (POLLER "" CACHE STRING "Choose polling system for I/O threads. valid values are
                             kqueue, epoll, devpoll, pollset, poll or select [default=autodetect]")
 
 include (CheckFunctionExists)
@@ -100,7 +120,7 @@ if (POLLER STREQUAL "")
         set (POLLER "epoll")
         check_function_exists (epoll_create1 HAVE_EPOLL_CLOEXEC)
         if (HAVE_EPOLL_CLOEXEC)
-            set (ZMQ_USE_EPOLL_CLOEXEC 1)
+            set (ZMQ_IOTHREAD_POLLER_USE_EPOLL_CLOEXEC 1)
         endif ()
     endif ()
 endif ()
@@ -155,12 +175,24 @@ if (POLLER STREQUAL "kqueue"
  OR POLLER STREQUAL "pollset"
  OR POLLER STREQUAL "poll"
  OR POLLER STREQUAL "select")
-    message (STATUS "Detected ${POLLER} polling method")
+    message (STATUS "Using polling method in I/O threads: ${POLLER}")
     string (TOUPPER ${POLLER} UPPER_POLLER)
-    set (ZMQ_USE_${UPPER_POLLER} 1)
+    set (ZMQ_IOTHREAD_POLLER_USE_${UPPER_POLLER} 1)
 else ()
     message (FATAL_ERROR "Invalid polling method")
 endif ()
+
+if (API_POLLER STREQUAL "")
+	if (POLLER STREQUAL "select")
+		set (API_POLLER "select")
+	else()
+		set (API_POLLER "poll")
+	endif()
+endif()
+
+message (STATUS "Using polling method in zmq_poll(er)_* API: ${API_POLLER}")
+    string (TOUPPER ${API_POLLER} UPPER_API_POLLER)
+set (ZMQ_POLL_BASED_ON_${UPPER_API_POLLER} 1)
 
 include (TestZMQVersion)
 if (NOT CMAKE_CROSSCOMPILING)
@@ -298,6 +330,7 @@ endif ()
 
 if (LIBZMQ_WERROR)
   zmq_check_cxx_flag_prepend ("-Werror")
+  zmq_check_cxx_flag_prepend ("/WX")
   if (NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     zmq_check_cxx_flag_prepend ("-errwarn=%all")
   endif()
@@ -477,6 +510,7 @@ endif ()
 if (MSVC)
   # Parallel make.
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+  set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
 
   # Compile the static lib with debug information included
   string (REGEX REPLACE "/Z." "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
@@ -585,6 +619,7 @@ set (cxx-sources
         udp_address.cpp
         scatter.cpp
         gather.cpp
+	ip_resolver.cpp
 		zap_client.cpp
 		# at least for VS, the header files must also be listed
 		address.hpp
@@ -1109,8 +1144,6 @@ endif ()
 
 #-----------------------------------------------------------------------------
 # installer
-
-include(GNUInstallDirs)
 
 if (MSVC)
   install (TARGETS ${target_outputs}

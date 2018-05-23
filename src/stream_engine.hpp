@@ -40,6 +40,7 @@
 #include "options.hpp"
 #include "socket_base.hpp"
 #include "metadata.hpp"
+#include "msg.hpp"
 
 namespace zmq
 {
@@ -51,7 +52,6 @@ enum
 };
 
 class io_thread_t;
-class msg_t;
 class session_base_t;
 class mechanism_t;
 
@@ -127,6 +127,7 @@ class stream_engine_t : public io_object_t, public i_engine
     typedef metadata_t::dict_t properties_t;
     bool init_properties (properties_t &properties);
 
+    int process_command_message (msg_t *msg_);
     int produce_ping_message (msg_t *msg_);
     int process_heartbeat_message (msg_t *msg_);
     int produce_pong_message (msg_t *msg_);
@@ -138,6 +139,8 @@ class stream_engine_t : public io_object_t, public i_engine
     bool as_server;
 
     msg_t tx_msg;
+    //  Need to store PING payload for PONG
+    msg_t pong_msg;
 
     handle_t handle;
 

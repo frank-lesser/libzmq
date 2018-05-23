@@ -31,6 +31,7 @@
 #include "testutil_unity.hpp"
 
 #include <unity.h>
+#include <limits.h>
 
 void setUp ()
 {
@@ -41,30 +42,6 @@ void tearDown ()
 {
     teardown_test_context ();
 }
-
-// duplicated from fd.hpp
-#ifdef ZMQ_HAVE_WINDOWS
-#define close closesocket
-#if defined _MSC_VER && _MSC_VER <= 1400
-typedef UINT_PTR fd_t;
-enum
-{
-    retired_fd = (fd_t) (~0)
-};
-#else
-typedef SOCKET fd_t;
-enum
-{
-    retired_fd = (fd_t) INVALID_SOCKET
-};
-#endif
-#else
-typedef int fd_t;
-enum
-{
-    retired_fd = -1
-};
-#endif
 
 fd_t get_fd (void *socket)
 {
@@ -339,9 +316,19 @@ void call_poller_modify_unregistered_fails (void *poller, void *socket)
 
 void call_poller_add_no_events (void *poller, void *socket)
 {
-    //  add a socket with no events
-    //  TODO should this really be legal? it does not make any sense...
+    //  add a socket with no events initially (may be activated later with
+    //  zmq_poller_modify)
     TEST_ASSERT_SUCCESS_ERRNO (zmq_poller_add (poller, socket, NULL, 0));
+    //  TODO test that no events are signalled
+}
+
+void call_poller_modify_no_events (void *poller, void *socket)
+{
+    //  deactivates all events for a socket temporarily (may be activated again
+    //  later with zmq_poller_modify)
+    zmq_poller_add (poller, socket, NULL, ZMQ_POLLIN);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_poller_modify (poller, socket, 0));
+    //  TODO test that no events are signalled
 }
 
 void call_poller_add_fd_twice_fails (void *poller, void * /*zeromq_socket*/)
@@ -383,16 +370,62 @@ void call_poller_modify_fd_unregistered_fails (void *poller,
     TEST_ASSERT_SUCCESS_ERRNO (close (plain_socket));
 }
 
+void call_poller_add_invalid_events_fails (void *poller, void *zeromq_socket)
+{
+    TEST_ASSERT_FAILURE_ERRNO (
+      EINVAL, zmq_poller_add (poller, zeromq_socket, NULL, SHRT_MAX));
+}
+
+void call_poller_modify_invalid_events_fails (void *poller, void *zeromq_socket)
+{
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_poller_add (poller, zeromq_socket, NULL, 0));
+
+    TEST_ASSERT_FAILURE_ERRNO (
+      EINVAL, zmq_poller_modify (poller, zeromq_socket, SHRT_MAX));
+}
+
+void call_poller_add_fd_invalid_events_fails (void *poller,
+                                              void * /*zeromq_socket*/)
+{
+    fd_t plain_socket = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT_FAILURE_ERRNO (
+      EINVAL, zmq_poller_add_fd (poller, plain_socket, NULL, SHRT_MAX));
+
+    TEST_ASSERT_SUCCESS_ERRNO (close (plain_socket));
+}
+
+void call_poller_modify_fd_invalid_events_fails (void *poller,
+                                                 void * /*zeromq_socket*/)
+{
+    fd_t plain_socket = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_poller_add_fd (poller, plain_socket, NULL, 0));
+    TEST_ASSERT_FAILURE_ERRNO (
+      EINVAL, zmq_poller_modify_fd (poller, plain_socket, SHRT_MAX));
+
+    TEST_ASSERT_SUCCESS_ERRNO (close (plain_socket));
+}
+
 TEST_CASE_FUNC_PARAM (call_poller_add_twice_fails, test_with_empty_poller)
 TEST_CASE_FUNC_PARAM (call_poller_remove_unregistered_fails,
                       test_with_empty_poller)
 TEST_CASE_FUNC_PARAM (call_poller_modify_unregistered_fails,
                       test_with_empty_poller)
 TEST_CASE_FUNC_PARAM (call_poller_add_no_events, test_with_empty_poller)
+TEST_CASE_FUNC_PARAM (call_poller_modify_no_events, test_with_empty_poller)
 TEST_CASE_FUNC_PARAM (call_poller_add_fd_twice_fails, test_with_empty_poller)
 TEST_CASE_FUNC_PARAM (call_poller_remove_fd_unregistered_fails,
                       test_with_empty_poller)
 TEST_CASE_FUNC_PARAM (call_poller_modify_fd_unregistered_fails,
+                      test_with_empty_poller)
+
+TEST_CASE_FUNC_PARAM (call_poller_add_invalid_events_fails,
+                      test_with_empty_poller)
+TEST_CASE_FUNC_PARAM (call_poller_modify_invalid_events_fails,
+                      test_with_empty_poller)
+TEST_CASE_FUNC_PARAM (call_poller_add_fd_invalid_events_fails,
+                      test_with_empty_poller)
+TEST_CASE_FUNC_PARAM (call_poller_modify_fd_invalid_events_fails,
                       test_with_empty_poller)
 
 void call_poller_wait_empty_with_timeout_fails (void *poller, void * /*socket*/)
@@ -603,9 +636,14 @@ int main (void)
     RUN_TEST (test_call_poller_remove_unregistered_fails);
     RUN_TEST (test_call_poller_modify_unregistered_fails);
     RUN_TEST (test_call_poller_add_no_events);
+    RUN_TEST (test_call_poller_modify_no_events);
     RUN_TEST (test_call_poller_add_fd_twice_fails);
     RUN_TEST (test_call_poller_remove_fd_unregistered_fails);
     RUN_TEST (test_call_poller_modify_fd_unregistered_fails);
+    RUN_TEST (test_call_poller_add_invalid_events_fails);
+    RUN_TEST (test_call_poller_modify_invalid_events_fails);
+    RUN_TEST (test_call_poller_add_fd_invalid_events_fails);
+    RUN_TEST (test_call_poller_modify_fd_invalid_events_fails);
 
     RUN_TEST (test_call_poller_wait_empty_with_timeout_fails);
     RUN_TEST (test_call_poller_wait_empty_without_timeout_fails);

@@ -82,7 +82,8 @@ int zmq::req_t::xsend (msg_t *msg_)
             request_id++;
 
             //  Copy request id before sending (see issue #1695 for details).
-            uint32_t *request_id_copy = (uint32_t *) malloc (sizeof (uint32_t));
+            uint32_t *request_id_copy =
+              static_cast<uint32_t *> (malloc (sizeof (uint32_t)));
             zmq_assert (request_id_copy);
 
             *request_id_copy = request_id;
@@ -126,7 +127,7 @@ int zmq::req_t::xsend (msg_t *msg_)
         }
     }
 
-    bool more = msg_->flags () & msg_t::more ? true : false;
+    bool more = (msg_->flags () & msg_t::more) != 0;
 
     int rc = dealer_t::xsend (msg_);
     if (rc != 0)
@@ -285,6 +286,11 @@ zmq::req_session_t::~req_session_t ()
 
 int zmq::req_session_t::push_msg (msg_t *msg_)
 {
+    //  Ignore commands, they are processed by the engine and should not
+    //  affect the state machine.
+    if (unlikely (msg_->flags () & msg_t::command))
+        return 0;
+
     switch (state) {
         case bottom:
             if (msg_->flags () == msg_t::more) {
@@ -294,7 +300,8 @@ int zmq::req_session_t::push_msg (msg_t *msg_)
                 if (msg_->size () == sizeof (uint32_t)) {
                     state = request_id;
                     return session_base_t::push_msg (msg_);
-                } else if (msg_->size () == 0) {
+                }
+                if (msg_->size () == 0) {
                     state = body;
                     return session_base_t::push_msg (msg_);
                 }

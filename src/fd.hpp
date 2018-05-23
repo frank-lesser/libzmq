@@ -38,6 +38,9 @@ namespace zmq
 {
 #ifdef ZMQ_HAVE_WINDOWS
 #if defined _MSC_VER && _MSC_VER <= 1400
+///< \todo zmq.h uses SOCKET unconditionally, so probably VS versions before
+/// VS2008 are unsupported anyway. Apart from that, this seems to depend on
+/// the Windows SDK version rather than the VS version.
 typedef UINT_PTR fd_t;
 enum
 {
@@ -46,8 +49,11 @@ enum
 #else
 typedef SOCKET fd_t;
 enum
+#if _MSC_VER >= 1800
+  : fd_t
+#endif
 {
-    retired_fd = (fd_t) INVALID_SOCKET
+    retired_fd = INVALID_SOCKET
 };
 #endif
 #else

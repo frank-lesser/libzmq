@@ -196,7 +196,7 @@ zmq::socket_base_t::socket_base_t (ctx_t *parent_,
     ctx_terminated (false),
     destroyed (false),
     poller (NULL),
-    handle ((poller_t::handle_t) NULL),
+    handle (static_cast<poller_t::handle_t> (NULL)),
     last_tsc (0),
     ticks (0),
     rcvmore (false),
@@ -210,7 +210,7 @@ zmq::socket_base_t::socket_base_t (ctx_t *parent_,
     options.socket_id = sid_;
     options.ipv6 = (parent_->get (ZMQ_IPV6) != 0);
     options.linger.store (parent_->get (ZMQ_BLOCKY) ? -1 : 0);
-    options.zero_copy = parent_->get (ZMQ_ZERO_COPY_RECV);
+    options.zero_copy = parent_->get (ZMQ_ZERO_COPY_RECV) != 0;
 
     if (thread_safe) {
         mailbox = new (std::nothrow) mailbox_safe_t (&sync);
@@ -410,8 +410,8 @@ int zmq::socket_base_t::getsockopt (int option_,
             return -1;
         }
 
-        return do_getsockopt<fd_t> (optval_, optvallen_,
-                                    ((mailbox_t *) mailbox)->get_fd ());
+        return do_getsockopt<fd_t> (
+          optval_, optvallen_, (static_cast<mailbox_t *> (mailbox))->get_fd ());
     }
 
     if (option_ == ZMQ_EVENTS) {
@@ -462,7 +462,7 @@ void zmq::socket_base_t::add_signaler (signaler_t *s_)
     zmq_assert (thread_safe);
 
     scoped_lock_t sync_lock (sync);
-    ((mailbox_safe_t *) mailbox)->add_signaler (s_);
+    (static_cast<mailbox_safe_t *> (mailbox))->add_signaler (s_);
 }
 
 void zmq::socket_base_t::remove_signaler (signaler_t *s_)
@@ -470,7 +470,7 @@ void zmq::socket_base_t::remove_signaler (signaler_t *s_)
     zmq_assert (thread_safe);
 
     scoped_lock_t sync_lock (sync);
-    ((mailbox_safe_t *) mailbox)->remove_signaler (s_);
+    (static_cast<mailbox_safe_t *> (mailbox))->remove_signaler (s_);
 }
 
 int zmq::socket_base_t::bind (const char *addr_)
@@ -534,7 +534,8 @@ int zmq::socket_base_t::bind (const char *addr_)
 
         paddr->resolved.udp_addr = new (std::nothrow) udp_address_t ();
         alloc_assert (paddr->resolved.udp_addr);
-        rc = paddr->resolved.udp_addr->resolve (address.c_str (), true);
+        rc = paddr->resolved.udp_addr->resolve (address.c_str (), true,
+                                                options.ipv6);
         if (rc != 0) {
             LIBZMQ_DELETE (paddr);
             return -1;
@@ -782,7 +783,7 @@ int zmq::socket_base_t::connect (const char *addr_)
         last_endpoint.assign (addr_);
 
         // remember inproc connections for disconnect
-        inprocs.ZMQ_MAP_INSERT_OR_EMPLACE (addr_, new_pipes[0]);
+        inprocs.ZMQ_MAP_INSERT_OR_EMPLACE (std::string (addr_), new_pipes[0]);
 
         options.connected = true;
         return 0;
@@ -876,7 +877,8 @@ int zmq::socket_base_t::connect (const char *addr_)
 
         paddr->resolved.udp_addr = new (std::nothrow) udp_address_t ();
         alloc_assert (paddr->resolved.udp_addr);
-        rc = paddr->resolved.udp_addr->resolve (address.c_str (), false);
+        rc = paddr->resolved.udp_addr->resolve (address.c_str (), false,
+                                                options.ipv6);
         if (rc != 0) {
             LIBZMQ_DELETE (paddr);
             return -1;
@@ -980,7 +982,7 @@ void zmq::socket_base_t::add_endpoint (const char *addr_,
 {
     //  Activate the session. Make it a child of this socket.
     launch_child (endpoint_);
-    endpoints.ZMQ_MAP_INSERT_OR_EMPLACE (addr_,
+    endpoints.ZMQ_MAP_INSERT_OR_EMPLACE (std::string (addr_),
                                          endpoint_pipe_t (endpoint_, pipe));
 }
 
@@ -1144,7 +1146,7 @@ int zmq::socket_base_t::send (msg_t *msg_, int flags_)
             return -1;
         }
         if (timeout > 0) {
-            timeout = (int) (end - clock.now_ms ());
+            timeout = static_cast<int> (end - clock.now_ms ());
             if (timeout <= 0) {
                 errno = EAGAIN;
                 return -1;
@@ -1239,7 +1241,7 @@ int zmq::socket_base_t::recv (msg_t *msg_, int flags_)
         }
         block = true;
         if (timeout > 0) {
-            timeout = (int) (end - clock.now_ms ());
+            timeout = static_cast<int> (end - clock.now_ms ());
             if (timeout <= 0) {
                 errno = EAGAIN;
                 return -1;
@@ -1257,7 +1259,7 @@ int zmq::socket_base_t::close ()
 
     //  Remove all existing signalers for thread safe sockets
     if (thread_safe)
-        ((mailbox_safe_t *) mailbox)->clear_signalers ();
+        (static_cast<mailbox_safe_t *> (mailbox))->clear_signalers ();
 
     //  Mark the socket as dead
     tag = 0xdeadbeef;
@@ -1289,7 +1291,7 @@ void zmq::socket_base_t::start_reaping (poller_t *poller_)
     fd_t fd;
 
     if (!thread_safe)
-        fd = ((mailbox_t *) mailbox)->get_fd ();
+        fd = (static_cast<mailbox_t *> (mailbox))->get_fd ();
     else {
         scoped_optional_lock_t sync_lock (thread_safe ? &sync : NULL);
 
@@ -1298,7 +1300,8 @@ void zmq::socket_base_t::start_reaping (poller_t *poller_)
 
         //  Add signaler to the safe mailbox
         fd = reaper_signaler->get_fd ();
-        ((mailbox_safe_t *) mailbox)->add_signaler (reaper_signaler);
+        (static_cast<mailbox_safe_t *> (mailbox))
+          ->add_signaler (reaper_signaler);
 
         //  Send a signal to make sure reaper handle existing commands
         reaper_signaler->send ();
@@ -1392,7 +1395,7 @@ void zmq::socket_base_t::process_term (int linger_)
     //  Ask all attached pipes to terminate.
     for (pipes_t::size_type i = 0; i != pipes.size (); ++i)
         pipes[i]->terminate (false);
-    register_term_acks ((int) pipes.size ());
+    register_term_acks (static_cast<int> (pipes.size ()));
 
     //  Continue the termination process immediately.
     own_t::process_term (linger_);
@@ -1728,10 +1731,10 @@ void zmq::socket_base_t::monitor_event (int event_,
         //  Send event in first frame
         zmq_msg_t msg;
         zmq_msg_init_size (&msg, 6);
-        uint8_t *data = (uint8_t *) zmq_msg_data (&msg);
+        uint8_t *data = static_cast<uint8_t *> (zmq_msg_data (&msg));
         //  Avoid dereferencing uint32_t on unaligned address
-        uint16_t event = (uint16_t) event_;
-        uint32_t value = (uint32_t) value_;
+        uint16_t event = static_cast<uint16_t> (event_);
+        uint32_t value = static_cast<uint32_t> (value_);
         memcpy (data + 0, &event, sizeof (event));
         memcpy (data + 2, &value, sizeof (value));
         zmq_sendmsg (monitor_socket, &msg, ZMQ_SNDMORE);

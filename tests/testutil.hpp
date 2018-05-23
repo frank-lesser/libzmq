@@ -80,10 +80,46 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/if.h>
+#include <netdb.h>
 #if defined(ZMQ_HAVE_AIX)
 #include <sys/types.h>
 #include <sys/socketvar.h>
 #endif
+#endif
+
+// duplicated from fd.hpp
+#ifdef ZMQ_HAVE_WINDOWS
+#define close closesocket
+typedef int socket_size_t;
+const char *as_setsockopt_opt_t (const void *opt)
+{
+    return static_cast<const char *> (opt);
+}
+#if defined _MSC_VER && _MSC_VER <= 1400
+typedef UINT_PTR fd_t;
+enum
+{
+    retired_fd = (fd_t) (~0)
+};
+#else
+typedef SOCKET fd_t;
+enum
+{
+    retired_fd = (fd_t) INVALID_SOCKET
+};
+#endif
+#else
+typedef size_t socket_size_t;
+const void *as_setsockopt_opt_t (const void *opt)
+{
+    return opt;
+}
+typedef int fd_t;
+enum
+{
+    retired_fd = -1
+};
 #endif
 
 #define LIBZMQ_UNUSED(object) (void) object
@@ -349,11 +385,11 @@ int is_ipv6_available (void)
     test_addr.sin6_family = AF_INET6;
     inet_pton (AF_INET6, "::1", &(test_addr.sin6_addr));
 
-#ifdef ZMQ_HAVE_WINDOWS
-    SOCKET fd = socket (AF_INET6, SOCK_STREAM, IPPROTO_IP);
-    if (fd == INVALID_SOCKET)
+    fd_t fd = socket (AF_INET6, SOCK_STREAM, IPPROTO_IP);
+    if (fd == retired_fd)
         ipv6 = 0;
     else {
+#ifdef ZMQ_HAVE_WINDOWS
         setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, (const char *) &ipv6,
                     sizeof (int));
         rc = setsockopt (fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *) &ipv6,
@@ -365,13 +401,7 @@ int is_ipv6_available (void)
             if (rc == SOCKET_ERROR)
                 ipv6 = 0;
         }
-        closesocket (fd);
-    }
 #else
-    int fd = socket (AF_INET6, SOCK_STREAM, IPPROTO_IP);
-    if (fd == -1)
-        ipv6 = 0;
-    else {
         setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &ipv6, sizeof (int));
         rc = setsockopt (fd, IPPROTO_IPV6, IPV6_V6ONLY, &ipv6, sizeof (int));
         if (rc != 0)
@@ -381,9 +411,9 @@ int is_ipv6_available (void)
             if (rc != 0)
                 ipv6 = 0;
         }
+#endif
         close (fd);
     }
-#endif
 
     return ipv6;
 #endif // _WIN32_WINNT < 0x0600
@@ -412,13 +442,32 @@ int is_tipc_available (void)
 #endif // ZMQ_HAVE_TIPC
 }
 
-#if defined(ZMQ_HAVE_WINDOWS)
-
-int close (int fd)
+//  Wrapper around 'inet_pton' for systems that don't support it (e.g. Windows
+//  XP)
+int test_inet_pton (int af_, const char *src_, void *dst_)
 {
-    return closesocket (fd);
-}
+#if defined(ZMQ_HAVE_WINDOWS) && (_WIN32_WINNT < 0x0600)
+    if (af_ == AF_INET) {
+        struct in_addr *ip4addr = (struct in_addr *) dst_;
 
+        ip4addr->s_addr = inet_addr (src_);
+
+        //  INADDR_NONE is -1 which is also a valid representation for IP
+        //  255.255.255.255
+        if (ip4addr->s_addr == INADDR_NONE
+            && strcmp (src_, "255.255.255.255") != 0) {
+            return 0;
+        }
+
+        //  Success
+        return 1;
+    } else {
+        //  Not supported.
+        return 0;
+    }
+#else
+    return inet_pton (af_, src_, dst_);
 #endif
+}
 
 #endif

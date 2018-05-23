@@ -66,6 +66,10 @@
 #include <pgm/pgm.h>
 #endif
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 zmq::fd_t zmq::open_socket (int domain_, int type_, int protocol_)
 {
     int rc;
@@ -76,28 +80,22 @@ zmq::fd_t zmq::open_socket (int domain_, int type_, int protocol_)
     type_ |= SOCK_CLOEXEC;
 #endif
 
-    fd_t s = socket (domain_, type_, protocol_);
-#ifdef ZMQ_HAVE_WINDOWS
-    if (s == INVALID_SOCKET)
-        return INVALID_SOCKET;
+#if defined ZMQ_HAVE_WINDOWS && defined WSA_FLAG_NO_HANDLE_INHERIT
+    // if supported, create socket with WSA_FLAG_NO_HANDLE_INHERIT, such that
+    // the race condition in making it non-inheritable later is avoided
+    const fd_t s = WSASocket (domain_, type_, protocol_, NULL, 0,
+                              WSA_FLAG_NO_HANDLE_INHERIT);
 #else
-    if (s == -1)
-        return -1;
+    const fd_t s = socket (domain_, type_, protocol_);
 #endif
+    if (s == retired_fd) {
+#ifdef ZMQ_HAVE_WINDOWS
+        errno = wsa_error_to_errno (WSAGetLastError ());
+#endif
+        return retired_fd;
+    }
 
-        //  If there's no SOCK_CLOEXEC, let's try the second best option. Note that
-        //  race condition can cause socket not to be closed (if fork happens
-        //  between socket creation and this point).
-#if !defined ZMQ_HAVE_SOCK_CLOEXEC && defined FD_CLOEXEC
-    rc = fcntl (s, F_SETFD, FD_CLOEXEC);
-    errno_assert (rc != -1);
-#endif
-
-    //  On Windows, preventing sockets to be inherited by child processes.
-#if defined ZMQ_HAVE_WINDOWS && defined HANDLE_FLAG_INHERIT
-    BOOL brc = SetHandleInformation ((HANDLE) s, HANDLE_FLAG_INHERIT, 0);
-    win_assert (brc);
-#endif
+    make_socket_noninheritable (s);
 
     //  Socket is not yet connected so EINVAL is not a valid networking error
     rc = zmq::set_nosigpipe (s);
@@ -135,8 +133,8 @@ void zmq::enable_ipv4_mapping (fd_t s_)
 #else
     int flag = 0;
 #endif
-    int rc =
-      setsockopt (s_, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &flag, sizeof (flag));
+    int rc = setsockopt (s_, IPPROTO_IPV6, IPV6_V6ONLY,
+                         reinterpret_cast<char *> (&flag), sizeof (flag));
 #ifdef ZMQ_HAVE_WINDOWS
     wsa_assert (rc != SOCKET_ERROR);
 #else
@@ -156,7 +154,8 @@ int zmq::get_peer_ip_address (fd_t sockfd_, std::string &ip_addr_)
 #else
     socklen_t addrlen = sizeof ss;
 #endif
-    rc = getpeername (sockfd_, (struct sockaddr *) &ss, &addrlen);
+    rc = getpeername (sockfd_, reinterpret_cast<struct sockaddr *> (&ss),
+                      &addrlen);
 #ifdef ZMQ_HAVE_WINDOWS
     if (rc == SOCKET_ERROR) {
         const int last_error = WSAGetLastError ();
@@ -167,14 +166,18 @@ int zmq::get_peer_ip_address (fd_t sockfd_, std::string &ip_addr_)
     }
 #else
     if (rc == -1) {
+#if !defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE
         errno_assert (errno != EBADF && errno != EFAULT && errno != ENOTSOCK);
+#else
+        errno_assert (errno != EFAULT && errno != ENOTSOCK);
+#endif
         return 0;
     }
 #endif
 
     char host[NI_MAXHOST];
-    rc = getnameinfo ((struct sockaddr *) &ss, addrlen, host, sizeof host, NULL,
-                      0, NI_NUMERICHOST);
+    rc = getnameinfo (reinterpret_cast<struct sockaddr *> (&ss), addrlen, host,
+                      sizeof host, NULL, 0, NI_NUMERICHOST);
     if (rc != 0)
         return 0;
 
@@ -187,7 +190,7 @@ int zmq::get_peer_ip_address (fd_t sockfd_, std::string &ip_addr_)
     } u;
 
     u.sa_stor = ss;
-    return (int) u.sa.sa_family;
+    return static_cast<int> (u.sa.sa_family);
 }
 
 void zmq::set_ip_type_of_service (fd_t s_, int iptos)
@@ -311,8 +314,9 @@ void zmq::shutdown_network ()
 static void tune_socket (const SOCKET socket)
 {
     BOOL tcp_nodelay = 1;
-    int rc = setsockopt (socket, IPPROTO_TCP, TCP_NODELAY,
-                         (char *) &tcp_nodelay, sizeof tcp_nodelay);
+    int rc =
+      setsockopt (socket, IPPROTO_TCP, TCP_NODELAY,
+                  reinterpret_cast<char *> (&tcp_nodelay), sizeof tcp_nodelay);
     wsa_assert (rc != SOCKET_ERROR);
 
     zmq::tcp_tune_loopback_fast_path (socket);
@@ -415,7 +419,8 @@ int zmq::make_fdpair (fd_t *r_, fd_t *w_)
     //  Set SO_REUSEADDR and TCP_NODELAY on listening socket.
     BOOL so_reuseaddr = 1;
     int rc = setsockopt (listener, SOL_SOCKET, SO_REUSEADDR,
-                         (char *) &so_reuseaddr, sizeof so_reuseaddr);
+                         reinterpret_cast<char *> (&so_reuseaddr),
+                         sizeof so_reuseaddr);
     wsa_assert (rc != SOCKET_ERROR);
 
     tune_socket (listener);
@@ -441,12 +446,14 @@ int zmq::make_fdpair (fd_t *r_, fd_t *w_)
     }
 
     //  Bind listening socket to signaler port.
-    rc = bind (listener, (const struct sockaddr *) &addr, sizeof addr);
+    rc = bind (listener, reinterpret_cast<const struct sockaddr *> (&addr),
+               sizeof addr);
 
     if (rc != SOCKET_ERROR && signaler_port == 0) {
         //  Retrieve ephemeral port number
         int addrlen = sizeof addr;
-        rc = getsockname (listener, (struct sockaddr *) &addr, &addrlen);
+        rc = getsockname (listener, reinterpret_cast<struct sockaddr *> (&addr),
+                          &addrlen);
     }
 
     //  Listen for incoming connections.
@@ -455,7 +462,8 @@ int zmq::make_fdpair (fd_t *r_, fd_t *w_)
 
     //  Connect writer to the listener.
     if (rc != SOCKET_ERROR)
-        rc = connect (*w_, (struct sockaddr *) &addr, sizeof addr);
+        rc = connect (*w_, reinterpret_cast<struct sockaddr *> (&addr),
+                      sizeof addr);
 
     //  Accept connection from writer.
     if (rc != SOCKET_ERROR)
@@ -466,22 +474,26 @@ int zmq::make_fdpair (fd_t *r_, fd_t *w_)
     if (*r_ != INVALID_SOCKET) {
         size_t dummy_size =
           1024 * 1024; //  1M to overload default receive buffer
-        unsigned char *dummy = (unsigned char *) malloc (dummy_size);
+        unsigned char *dummy =
+          static_cast<unsigned char *> (malloc (dummy_size));
         wsa_assert (dummy);
 
-        int still_to_send = (int) dummy_size;
-        int still_to_recv = (int) dummy_size;
+        int still_to_send = static_cast<int> (dummy_size);
+        int still_to_recv = static_cast<int> (dummy_size);
         while (still_to_send || still_to_recv) {
             int nbytes;
             if (still_to_send > 0) {
-                nbytes =
-                  ::send (*w_, (char *) (dummy + dummy_size - still_to_send),
-                          still_to_send, 0);
+                nbytes = ::send (
+                  *w_,
+                  reinterpret_cast<char *> (dummy + dummy_size - still_to_send),
+                  still_to_send, 0);
                 wsa_assert (nbytes != SOCKET_ERROR);
                 still_to_send -= nbytes;
             }
-            nbytes = ::recv (*r_, (char *) (dummy + dummy_size - still_to_recv),
-                             still_to_recv, 0);
+            nbytes = ::recv (
+              *r_,
+              reinterpret_cast<char *> (dummy + dummy_size - still_to_recv),
+              still_to_recv, 0);
             wsa_assert (nbytes != SOCKET_ERROR);
             still_to_recv -= nbytes;
         }
@@ -512,11 +524,7 @@ int zmq::make_fdpair (fd_t *r_, fd_t *w_)
     }
 
     if (*r_ != INVALID_SOCKET) {
-#if !defined _WIN32_WCE && !defined ZMQ_HAVE_WINDOWS_UWP
-        //  On Windows, preventing sockets to be inherited by child processes.
-        BOOL brc = SetHandleInformation ((HANDLE) *r_, HANDLE_FLAG_INHERIT, 0);
-        win_assert (brc);
-#endif
+        make_socket_noninheritable (*r_);
         return 0;
     } else {
         //  Cleanup writer if connection failed
@@ -641,18 +649,32 @@ int zmq::make_fdpair (fd_t *r_, fd_t *w_)
         *w_ = *r_ = -1;
         return -1;
     } else {
-    //  If there's no SOCK_CLOEXEC, let's try the second best option. Note that
-    //  race condition can cause socket not to be closed (if fork happens
-    //  between socket creation and this point).
-#if !defined ZMQ_HAVE_SOCK_CLOEXEC && defined FD_CLOEXEC
-        rc = fcntl (sv[0], F_SETFD, FD_CLOEXEC);
-        errno_assert (rc != -1);
-        rc = fcntl (sv[1], F_SETFD, FD_CLOEXEC);
-        errno_assert (rc != -1);
-#endif
+        make_socket_noninheritable (sv[0]);
+        make_socket_noninheritable (sv[1]);
+
         *w_ = sv[0];
         *r_ = sv[1];
         return 0;
     }
+#endif
+}
+
+void zmq::make_socket_noninheritable (fd_t sock)
+{
+#if defined ZMQ_HAVE_WINDOWS && !defined _WIN32_WCE                            \
+  && !defined ZMQ_HAVE_WINDOWS_UWP
+    //  On Windows, preventing sockets to be inherited by child processes.
+    const BOOL brc = SetHandleInformation (reinterpret_cast<HANDLE> (sock),
+                                           HANDLE_FLAG_INHERIT, 0);
+    win_assert (brc);
+#endif
+
+#if (!defined ZMQ_HAVE_SOCK_CLOEXEC || !defined HAVE_ACCEPT4)                  \
+  && defined FD_CLOEXEC
+    //  If there 's no SOCK_CLOEXEC, let's try the second best option.
+    //  Race condition can cause socket not to be closed (if fork happens
+    //  between accept and this point).
+    const int rc = fcntl (sock, F_SETFD, FD_CLOEXEC);
+    errno_assert (rc != -1);
 #endif
 }

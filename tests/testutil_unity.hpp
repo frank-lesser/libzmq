@@ -57,11 +57,36 @@ int test_assert_success_message_errno_helper (int rc,
     return rc;
 }
 
+int test_assert_success_message_raw_errno_helper (int rc,
+                                                  const char *msg,
+                                                  const char *expr)
+{
+    if (rc == -1) {
+#if defined ZMQ_HAVE_WINDOWS
+        int current_errno = WSAGetLastError ();
+#else
+        int current_errno = errno;
+#endif
+
+        char buffer[512];
+        buffer[sizeof (buffer) - 1] =
+          0; // to ensure defined behavior with VC++ <= 2013
+        snprintf (buffer, sizeof (buffer) - 1, "%s failed%s%s%s, errno = %i",
+                  expr, msg ? " (additional info: " : "", msg ? msg : "",
+                  msg ? ")" : "", current_errno);
+        TEST_FAIL_MESSAGE (buffer);
+    }
+    return rc;
+}
+
 #define TEST_ASSERT_SUCCESS_MESSAGE_ERRNO(expr, msg)                           \
     test_assert_success_message_errno_helper (expr, msg, #expr)
 
 #define TEST_ASSERT_SUCCESS_ERRNO(expr)                                        \
     test_assert_success_message_errno_helper (expr, NULL, #expr)
+
+#define TEST_ASSERT_SUCCESS_RAW_ERRNO(expr)                                    \
+    test_assert_success_message_raw_errno_helper (expr, NULL, #expr)
 
 #define TEST_ASSERT_FAILURE_ERRNO(error_code, expr)                            \
     {                                                                          \
@@ -86,8 +111,8 @@ void recv_string_expect_success (void *socket, const char *str, int flags)
                                        "used for strings longer than 255 "
                                        "characters");
 
-    const int rc =
-      TEST_ASSERT_SUCCESS_ERRNO (zmq_recv (socket, buffer, sizeof (buffer), 0));
+    const int rc = TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_recv (socket, buffer, sizeof (buffer), flags));
     TEST_ASSERT_EQUAL_INT ((int) len, rc);
     if (str)
         TEST_ASSERT_EQUAL_STRING_LEN (str, buffer, len);
@@ -192,6 +217,24 @@ void *test_context_socket_close (void *socket)
     return socket;
 }
 
+void *test_context_socket_close_zero_linger (void *socket)
+{
+    const int linger = 0;
+    int rc = zmq_setsockopt (socket, ZMQ_LINGER, &linger, sizeof (linger));
+    TEST_ASSERT_TRUE (rc == 0 || zmq_errno () == ETERM);
+    return test_context_socket_close (socket);
+}
+
+void test_bind (void *socket,
+                const char *bind_address,
+                char *my_endpoint,
+                size_t len)
+{
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (socket, bind_address));
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_getsockopt (socket, ZMQ_LAST_ENDPOINT, my_endpoint, &len));
+}
+
 void bind_loopback (void *socket, int ipv6, char *my_endpoint, size_t len)
 {
     if (ipv6 && !is_ipv6_available ()) {
@@ -200,10 +243,9 @@ void bind_loopback (void *socket, int ipv6, char *my_endpoint, size_t len)
 
     TEST_ASSERT_SUCCESS_ERRNO (
       zmq_setsockopt (socket, ZMQ_IPV6, &ipv6, sizeof (int)));
-    TEST_ASSERT_SUCCESS_ERRNO (
-      zmq_bind (socket, ipv6 ? "tcp://[::1]:*" : "tcp://127.0.0.1:*"));
-    TEST_ASSERT_SUCCESS_ERRNO (
-      zmq_getsockopt (socket, ZMQ_LAST_ENDPOINT, my_endpoint, &len));
+
+    test_bind (socket, ipv6 ? "tcp://[::1]:*" : "tcp://127.0.0.1:*",
+               my_endpoint, len);
 }
 
 void bind_loopback_ipv4 (void *socket, char *my_endpoint, size_t len)

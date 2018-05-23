@@ -32,6 +32,18 @@
 
 #include <unity.h>
 
+// Helper macro to define the v4/v6 function pairs
+#define MAKE_TEST_V4V6(_test)                                                  \
+    static void _test##_ipv4 () { _test (false); }                             \
+                                                                               \
+    static void _test##_ipv6 ()                                                \
+    {                                                                          \
+        if (!is_ipv6_available ()) {                                           \
+            TEST_IGNORE_MESSAGE ("ipv6 is not available");                     \
+        }                                                                      \
+        _test (true);                                                          \
+    }
+
 void setUp ()
 {
     setup_test_context ();
@@ -111,15 +123,18 @@ void test_join_twice_fails ()
     test_context_socket_close (dish);
 }
 
-void test_radio_dish_tcp_poll ()
+void test_radio_dish_tcp_poll (int ipv6_)
 {
     size_t len = MAX_SOCKET_STRING;
     char my_endpoint[MAX_SOCKET_STRING];
 
     void *radio = test_context_socket (ZMQ_RADIO);
-    bind_loopback_ipv4 (radio, my_endpoint, len);
+    bind_loopback (radio, ipv6_, my_endpoint, len);
 
     void *dish = test_context_socket (ZMQ_DISH);
+
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (dish, ZMQ_IPV6, &ipv6_, sizeof (int)));
 
     // Joining
     TEST_ASSERT_SUCCESS_ERRNO (zmq_join (dish, "Movies"));
@@ -175,21 +190,30 @@ void test_radio_dish_tcp_poll ()
     test_context_socket_close (dish);
     test_context_socket_close (radio);
 }
+MAKE_TEST_V4V6 (test_radio_dish_tcp_poll)
 
-void test_dish_connect_fails ()
+void test_dish_connect_fails (int ipv6_)
 {
     void *dish = test_context_socket (ZMQ_DISH);
 
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (dish, ZMQ_IPV6, &ipv6_, sizeof (int)));
+
+    const char *url = ipv6_ ? "udp://[::1]:5556" : "udp://127.0.0.1:5556";
+
     //  Connecting dish should fail
-    TEST_ASSERT_FAILURE_ERRNO (ENOCOMPATPROTO,
-                               zmq_connect (dish, "udp://127.0.0.1:5556"));
+    TEST_ASSERT_FAILURE_ERRNO (ENOCOMPATPROTO, zmq_connect (dish, url));
 
     test_context_socket_close (dish);
 }
+MAKE_TEST_V4V6 (test_dish_connect_fails)
 
-void test_radio_bind_fails ()
+void test_radio_bind_fails (int ipv6_)
 {
     void *radio = test_context_socket (ZMQ_RADIO);
+
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (radio, ZMQ_IPV6, &ipv6_, sizeof (int)));
 
     //  Connecting dish should fail
     //  Bind radio should fail
@@ -198,14 +222,22 @@ void test_radio_bind_fails ()
 
     test_context_socket_close (radio);
 }
+MAKE_TEST_V4V6 (test_radio_bind_fails)
 
-void test_radio_dish_udp ()
+void test_radio_dish_udp (int ipv6_)
 {
     void *radio = test_context_socket (ZMQ_RADIO);
     void *dish = test_context_socket (ZMQ_DISH);
 
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (radio, ZMQ_IPV6, &ipv6_, sizeof (int)));
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (dish, ZMQ_IPV6, &ipv6_, sizeof (int)));
+
+    const char *radio_url = ipv6_ ? "udp://[::1]:5556" : "udp://127.0.0.1:5556";
+
     TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://*:5556"));
-    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://127.0.0.1:5556"));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, radio_url));
 
     msleep (SETTLE_TIME);
 
@@ -217,6 +249,246 @@ void test_radio_dish_udp ()
     test_context_socket_close (dish);
     test_context_socket_close (radio);
 }
+MAKE_TEST_V4V6 (test_radio_dish_udp)
+
+#define MCAST_IPV4 "226.8.5.5"
+#define MCAST_IPV6 "ff02::7a65:726f:6df1:0a01"
+
+static const char *mcast_url (int ipv6_)
+{
+    if (ipv6_) {
+        return "udp://[" MCAST_IPV6 "]:5555";
+    } else {
+        return "udp://[" MCAST_IPV4 "]:5555";
+    }
+}
+
+//  OSX uses a different name for this socket option
+#ifndef IPV6_ADD_MEMBERSHIP
+#define IPV6_ADD_MEMBERSHIP IPV6_JOIN_GROUP
+#endif
+
+union sa_u
+{
+    struct sockaddr generic;
+    struct sockaddr_in ipv4;
+    struct sockaddr_in6 ipv6;
+};
+
+//  Test if multicast is available on this machine by attempting to
+//  send a receive a multicast datagram
+static bool is_multicast_available (int ipv6_)
+{
+    int family = ipv6_ ? AF_INET6 : AF_INET;
+    fd_t bind_sock = retired_fd;
+    fd_t send_sock = retired_fd;
+    int port = 5555;
+    bool success = false;
+    const char *msg = "it works";
+    char buf[32];
+    union sa_u any;
+    union sa_u mcast;
+    socklen_t sl;
+    int rc;
+
+    if (ipv6_) {
+        struct sockaddr_in6 *any_ipv6 = &any.ipv6;
+        struct sockaddr_in6 *mcast_ipv6 = &mcast.ipv6;
+
+        any_ipv6->sin6_family = AF_INET6;
+        any_ipv6->sin6_port = htons (port);
+        any_ipv6->sin6_flowinfo = 0;
+        any_ipv6->sin6_scope_id = 0;
+
+        rc = inet_pton (AF_INET6, "::", &any_ipv6->sin6_addr);
+        if (rc == 0) {
+            goto out;
+        }
+
+        *mcast_ipv6 = *any_ipv6;
+
+        rc = inet_pton (AF_INET6, MCAST_IPV6, &mcast_ipv6->sin6_addr);
+        if (rc == 0) {
+            goto out;
+        }
+
+        sl = sizeof (*any_ipv6);
+    } else {
+        struct sockaddr_in *any_ipv4 = &any.ipv4;
+        struct sockaddr_in *mcast_ipv4 = &mcast.ipv4;
+
+        any_ipv4->sin_family = AF_INET;
+        any_ipv4->sin_port = htons (5555);
+
+        rc = inet_pton (AF_INET, "0.0.0.0", &any_ipv4->sin_addr);
+        if (rc == 0) {
+            goto out;
+        }
+
+        *mcast_ipv4 = *any_ipv4;
+
+        rc = inet_pton (AF_INET, MCAST_IPV4, &mcast_ipv4->sin_addr);
+        if (rc == 0) {
+            goto out;
+        }
+
+        sl = sizeof (*any_ipv4);
+    }
+
+    bind_sock = socket (family, SOCK_DGRAM, IPPROTO_UDP);
+    if (bind_sock < 0) {
+        goto out;
+    }
+
+    send_sock = socket (family, SOCK_DGRAM, IPPROTO_UDP);
+    if (bind_sock < 0) {
+        goto out;
+    }
+
+    rc = bind (bind_sock, &any.generic, sl);
+    if (rc < 0) {
+        goto out;
+    }
+
+    if (ipv6_) {
+        struct ipv6_mreq mreq;
+        struct sockaddr_in6 *mcast_ipv6 = &mcast.ipv6;
+
+        mreq.ipv6mr_multiaddr = mcast_ipv6->sin6_addr;
+        mreq.ipv6mr_interface = 0;
+
+        rc = setsockopt (bind_sock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP,
+                         as_setsockopt_opt_t (&mreq), sizeof (mreq));
+        if (rc < 0) {
+            goto out;
+        }
+
+        int loop = 1;
+        rc = setsockopt (send_sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP,
+                         as_setsockopt_opt_t (&loop), sizeof (loop));
+        if (rc < 0) {
+            goto out;
+        }
+    } else {
+        struct ip_mreq mreq;
+        struct sockaddr_in *mcast_ipv4 = &mcast.ipv4;
+
+        mreq.imr_multiaddr = mcast_ipv4->sin_addr;
+        mreq.imr_interface.s_addr = htonl (INADDR_ANY);
+
+        rc = setsockopt (bind_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                         as_setsockopt_opt_t (&mreq), sizeof (mreq));
+        if (rc < 0) {
+            goto out;
+        }
+
+        int loop = 1;
+        rc = setsockopt (send_sock, IPPROTO_IP, IP_MULTICAST_LOOP,
+                         as_setsockopt_opt_t (&loop), sizeof (loop));
+        if (rc < 0) {
+            goto out;
+        }
+    }
+
+    msleep (SETTLE_TIME);
+
+    rc = sendto (send_sock, msg, static_cast<socklen_t> (strlen (msg)), 0,
+                 &mcast.generic, sl);
+    if (rc < 0) {
+        goto out;
+    }
+
+    msleep (SETTLE_TIME);
+
+    rc = recvfrom (bind_sock, buf, sizeof (buf) - 1, 0, NULL, 0);
+    if (rc < 0) {
+        goto out;
+    }
+
+    buf[rc] = '\0';
+
+    success = (strcmp (msg, buf) == 0);
+
+out:
+    if (bind_sock >= 0) {
+        close (bind_sock);
+    }
+
+    if (send_sock >= 0) {
+        close (send_sock);
+    }
+
+    return success;
+}
+
+static void test_radio_dish_mcast (int ipv6_)
+{
+    void *radio = test_context_socket (ZMQ_RADIO);
+    void *dish = test_context_socket (ZMQ_DISH);
+
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (radio, ZMQ_IPV6, &ipv6_, sizeof (int)));
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (dish, ZMQ_IPV6, &ipv6_, sizeof (int)));
+
+    const char *url = mcast_url (ipv6_);
+
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, url));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, url));
+
+    msleep (SETTLE_TIME);
+
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_join (dish, "TV"));
+
+    msg_send_expect_success (radio, "TV", "Friends");
+    msg_recv_cmp (dish, "TV", "Friends");
+
+    test_context_socket_close (dish);
+    test_context_socket_close (radio);
+}
+MAKE_TEST_V4V6 (test_radio_dish_mcast)
+
+static void test_radio_dish_no_loop (int ipv6_)
+{
+    void *radio = test_context_socket (ZMQ_RADIO);
+    void *dish = test_context_socket (ZMQ_DISH);
+
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (radio, ZMQ_IPV6, &ipv6_, sizeof (int)));
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (dish, ZMQ_IPV6, &ipv6_, sizeof (int)));
+
+    //  Disable multicast loop
+    int loop = 0;
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (radio, ZMQ_MULTICAST_LOOP, &loop, sizeof (int)));
+
+    const char *url = mcast_url (ipv6_);
+
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, url));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, url));
+
+    msleep (SETTLE_TIME);
+
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_join (dish, "TV"));
+
+    msg_send_expect_success (radio, "TV", "Friends");
+
+    // Looping is disabled, we shouldn't receive anything
+    msleep (SETTLE_TIME);
+    zmq_msg_t msg;
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_msg_init (&msg));
+
+    int rc = zmq_msg_recv (&msg, dish, ZMQ_DONTWAIT);
+    zmq_msg_close (&msg);
+
+    TEST_ASSERT_EQUAL_INT (rc, -1);
+    TEST_ASSERT_EQUAL_INT (errno, EAGAIN);
+
+    test_context_socket_close (dish);
+    test_context_socket_close (radio);
+}
+MAKE_TEST_V4V6 (test_radio_dish_no_loop)
 
 int main (void)
 {
@@ -226,10 +498,27 @@ int main (void)
     RUN_TEST (test_leave_unjoined_fails);
     RUN_TEST (test_join_too_long_fails);
     RUN_TEST (test_join_twice_fails);
-    RUN_TEST (test_radio_bind_fails);
-    RUN_TEST (test_dish_connect_fails);
-    RUN_TEST (test_radio_dish_tcp_poll);
-    RUN_TEST (test_radio_dish_udp);
+    RUN_TEST (test_radio_bind_fails_ipv4);
+    RUN_TEST (test_radio_bind_fails_ipv6);
+    RUN_TEST (test_dish_connect_fails_ipv4);
+    RUN_TEST (test_dish_connect_fails_ipv6);
+    RUN_TEST (test_radio_dish_tcp_poll_ipv4);
+    RUN_TEST (test_radio_dish_tcp_poll_ipv6);
+    RUN_TEST (test_radio_dish_udp_ipv4);
+    RUN_TEST (test_radio_dish_udp_ipv6);
+
+    bool ipv4_mcast = is_multicast_available (false);
+    bool ipv6_mcast = is_ipv6_available () && is_multicast_available (true);
+
+    if (ipv4_mcast) {
+        RUN_TEST (test_radio_dish_mcast_ipv4);
+        RUN_TEST (test_radio_dish_no_loop_ipv4);
+    }
+
+    if (ipv6_mcast) {
+        RUN_TEST (test_radio_dish_mcast_ipv6);
+        RUN_TEST (test_radio_dish_no_loop_ipv6);
+    }
 
     return UNITY_END ();
 }

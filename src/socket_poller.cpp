@@ -31,6 +31,8 @@
 #include "socket_poller.hpp"
 #include "err.hpp"
 
+#include <limits.h>
+
 static bool is_thread_safe (zmq::socket_base_t &socket)
 {
     // do not use getsockopt here, since that would fail during context termination
@@ -137,7 +139,13 @@ int zmq::socket_poller_t::add (socket_base_t *socket_,
         -1
 #endif
     };
-    items.push_back (item);
+    try {
+        items.push_back (item);
+    }
+    catch (const std::bad_alloc &) {
+        errno = ENOMEM;
+        return -1;
+    }
     need_rebuild = true;
 
     return 0;
@@ -162,7 +170,13 @@ int zmq::socket_poller_t::add_fd (fd_t fd_, void *user_data_, short events_)
         -1
 #endif
     };
-    items.push_back (item);
+    try {
+        items.push_back (item);
+    }
+    catch (const std::bad_alloc &) {
+        errno = ENOMEM;
+        return -1;
+    }
     need_rebuild = true;
 
     return 0;
@@ -563,7 +577,8 @@ int zmq::socket_poller_t::wait (zmq::socket_poller_t::event_t *events_,
         else if (timeout_ < 0)
             timeout = -1;
         else
-            timeout = end - now;
+            timeout =
+              static_cast<int> (std::min<uint64_t> (end - now, INT_MAX));
 
         //  Wait for events.
         while (true) {
@@ -615,8 +630,8 @@ int zmq::socket_poller_t::wait (zmq::socket_poller_t::event_t *events_,
         } else if (timeout_ < 0)
             ptimeout = NULL;
         else {
-            timeout.tv_sec = (long) ((end - now) / 1000);
-            timeout.tv_usec = (long) ((end - now) % 1000 * 1000);
+            timeout.tv_sec = static_cast<long> ((end - now) / 1000);
+            timeout.tv_usec = static_cast<long> ((end - now) % 1000 * 1000);
             ptimeout = &timeout;
         }
 
@@ -628,14 +643,17 @@ int zmq::socket_poller_t::wait (zmq::socket_poller_t::event_t *events_,
             // We just need to copy fd_count elements of fd_array.
             // We gain huge memcpy() improvement if number of used SOCKETs is much lower than FD_SETSIZE.
             memcpy (&inset, &pollset_in,
-                    (char *) (pollset_in.fd_array + pollset_in.fd_count)
-                      - (char *) &pollset_in);
+                    reinterpret_cast<char *> (pollset_in.fd_array
+                                              + pollset_in.fd_count)
+                      - reinterpret_cast<char *> (&pollset_in));
             memcpy (&outset, &pollset_out,
-                    (char *) (pollset_out.fd_array + pollset_out.fd_count)
-                      - (char *) &pollset_out);
+                    reinterpret_cast<char *> (pollset_out.fd_array
+                                              + pollset_out.fd_count)
+                      - reinterpret_cast<char *> (&pollset_out));
             memcpy (&errset, &pollset_err,
-                    (char *) (pollset_err.fd_array + pollset_err.fd_count)
-                      - (char *) &pollset_err);
+                    reinterpret_cast<char *> (pollset_err.fd_array
+                                              + pollset_err.fd_count)
+                      - reinterpret_cast<char *> (&pollset_err));
             int rc = select (0, &inset, &outset, &errset, ptimeout);
             if (unlikely (rc == SOCKET_ERROR)) {
                 errno = zmq::wsa_error_to_errno (WSAGetLastError ());

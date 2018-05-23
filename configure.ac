@@ -175,11 +175,6 @@ case "${host_os}" in
         AC_DEFINE(ZMQ_HAVE_LINUX, 1, [Have Linux OS])
         libzmq_on_linux="yes"
 
-        # dladdr/dlopen is in libdl on glibc
-        AC_SEARCH_LIBS([dladdr], [dl dld], [], [
-          AC_MSG_ERROR([unable to find the dladdr() function])
-        ])
-
         if test "x$libzmq_tipc_support" = "xyes"; then
             AC_DEFINE(ZMQ_HAVE_TIPC, 1, [Have TIPC support])
         fi
@@ -319,6 +314,12 @@ case "${host_os}" in
         AC_MSG_ERROR([unsupported system: ${host_os}.])
         ;;
 esac
+
+# Sun Studio does not like anonymous structures in unions
+if test "x$libzmq_cv_[]_AC_LANG_ABBREV[]_sun_studio_compiler" = "xyes"; then
+    CXXFLAGS="${CXXFLAGS} -features=extensions"
+    CFLAGS="${CFLAGS} -features=extensions"
+fi
 
 # Checks for libraries
 AC_CHECK_LIB([pthread], [pthread_create])
@@ -784,7 +785,7 @@ if test "x$enable_libunwind" != "xno"; then
             AC_DEFINE(HAVE_LIBUNWIND, 1, [The libunwind library is to be used])
             AC_SUBST([LIBUNWIND_CFLAGS])
             AC_SUBST([LIBUNWIND_LIBS])
-            AC_CHECK_LIB([dl], [dladdr])
+            AC_SEARCH_LIBS([dladdr], [dl dld])
         ],
         [
             if test "x$enable_libunwind" = "xyes"; then

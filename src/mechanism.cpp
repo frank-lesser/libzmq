@@ -62,7 +62,8 @@ void zmq::mechanism_t::set_user_id (const void *data_, size_t size_)
 {
     user_id.set (static_cast<const unsigned char *> (data_), size_);
     zap_properties.ZMQ_MAP_INSERT_OR_EMPLACE (
-      ZMQ_MSG_PROPERTY_USER_ID, std::string ((char *) data_, size_));
+      std::string (ZMQ_MSG_PROPERTY_USER_ID),
+      std::string ((char *) data_, size_));
 }
 
 const zmq::blob_t &zmq::mechanism_t::get_user_id () const
@@ -184,13 +185,14 @@ size_t zmq::mechanism_t::add_basic_properties (unsigned char *buf,
 size_t zmq::mechanism_t::basic_properties_len () const
 {
     const char *socket_type = socket_type_string (options.type);
-    int meta_len = 0;
+    size_t meta_len = 0;
 
     for (std::map<std::string, std::string>::const_iterator it =
            options.app_metadata.begin ();
-         it != options.app_metadata.end (); ++it)
+         it != options.app_metadata.end (); ++it) {
         meta_len +=
           property_len (it->first.c_str (), strlen (it->second.c_str ()));
+    }
 
     return property_len (ZMTP_PROPERTY_SOCKET_TYPE, strlen (socket_type))
            + meta_len
@@ -207,14 +209,14 @@ void zmq::mechanism_t::make_command_with_basic_properties (
     const int rc = msg_->init_size (command_size);
     errno_assert (rc == 0);
 
-    unsigned char *ptr = (unsigned char *) msg_->data ();
+    unsigned char *ptr = static_cast<unsigned char *> (msg_->data ());
 
     //  Add prefix
     memcpy (ptr, prefix_, prefix_len_);
     ptr += prefix_len_;
 
-    add_basic_properties (ptr, command_size
-                                 - (ptr - (unsigned char *) msg_->data ()));
+    add_basic_properties (
+      ptr, command_size - (ptr - static_cast<unsigned char *> (msg_->data ())));
 }
 
 int zmq::mechanism_t::parse_metadata (const unsigned char *ptr_,
@@ -249,7 +251,8 @@ int zmq::mechanism_t::parse_metadata (const unsigned char *ptr_,
         if (name == ZMTP_PROPERTY_IDENTITY && options.recv_routing_id)
             set_peer_routing_id (value, value_length);
         else if (name == ZMTP_PROPERTY_SOCKET_TYPE) {
-            if (!check_socket_type ((const char *) value, value_length)) {
+            if (!check_socket_type (reinterpret_cast<const char *> (value),
+                                    value_length)) {
                 errno = EINVAL;
                 return -1;
             }

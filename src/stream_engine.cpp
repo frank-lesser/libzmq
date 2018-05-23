@@ -67,7 +67,7 @@ zmq::stream_engine_t::stream_engine_t (fd_t fd_,
                                        const std::string &endpoint_) :
     s (fd_),
     as_server (false),
-    handle ((handle_t) NULL),
+    handle (static_cast<handle_t> (NULL)),
     inpos (NULL),
     insize (0),
     decoder (NULL),
@@ -97,6 +97,8 @@ zmq::stream_engine_t::stream_engine_t (fd_t fd_,
     socket (NULL)
 {
     int rc = tx_msg.init ();
+    errno_assert (rc == 0);
+    rc = pong_msg.init ();
     errno_assert (rc == 0);
 
     //  Put the socket into non-blocking mode.
@@ -376,7 +378,7 @@ void zmq::stream_engine_t::out_event ()
         outpos = NULL;
         outsize = encoder->encode (&outpos, 0);
 
-        while (outsize < (size_t) out_batch_size) {
+        while (outsize < static_cast<size_t> (out_batch_size)) {
             if ((this->*next_msg) (&tx_msg) == -1)
                 break;
             encoder->load_msg (&tx_msg);
@@ -751,7 +753,7 @@ int zmq::stream_engine_t::process_routing_id_msg (msg_t *msg_)
         //  ZMQ 2.x peers receive published messages.
         int rc = subscription.init_size (1);
         errno_assert (rc == 0);
-        *(unsigned char *) subscription.data () = 1;
+        *static_cast<unsigned char *> (subscription.data ()) = 1;
         rc = session->push_msg (&subscription);
         errno_assert (rc == 0);
     }
@@ -935,9 +937,7 @@ int zmq::stream_engine_t::decode_and_push (msg_t *msg_)
     }
 
     if (msg_->flags () & msg_t::command) {
-        uint8_t cmd_id = *((uint8_t *) msg_->data ());
-        if (cmd_id == 4)
-            process_heartbeat_message (msg_);
+        process_command_message (msg_);
     }
 
     if (metadata)
@@ -999,14 +999,15 @@ bool zmq::stream_engine_t::init_properties (properties_t &properties)
 {
     if (peer_address.empty ())
         return false;
-    properties.ZMQ_MAP_INSERT_OR_EMPLACE (ZMQ_MSG_PROPERTY_PEER_ADDRESS,
-                                          peer_address);
+    properties.ZMQ_MAP_INSERT_OR_EMPLACE (
+      std::string (ZMQ_MSG_PROPERTY_PEER_ADDRESS), peer_address);
 
     //  Private property to support deprecated SRCFD
     std::ostringstream stream;
-    stream << (int) s;
+    stream << static_cast<int> (s);
     std::string fd_string = stream.str ();
-    properties.ZMQ_MAP_INSERT_OR_EMPLACE ("__fd", ZMQ_MOVE (fd_string));
+    properties.ZMQ_MAP_INSERT_OR_EMPLACE (std::string ("__fd"),
+                                          ZMQ_MOVE (fd_string));
     return true;
 }
 
@@ -1044,7 +1045,8 @@ int zmq::stream_engine_t::produce_ping_message (msg_t *msg_)
     memcpy (msg_->data (), "\4PING", 5);
 
     uint16_t ttl_val = htons (options.heartbeat_ttl);
-    memcpy (((uint8_t *) msg_->data ()) + 5, &ttl_val, sizeof (ttl_val));
+    memcpy ((static_cast<uint8_t *> (msg_->data ())) + 5, &ttl_val,
+            sizeof (ttl_val));
 
     rc = mechanism->encode (msg_);
     next_msg = &stream_engine_t::pull_and_encode;
@@ -1060,11 +1062,8 @@ int zmq::stream_engine_t::produce_pong_message (msg_t *msg_)
     int rc = 0;
     zmq_assert (mechanism != NULL);
 
-    rc = msg_->init_size (5);
+    rc = msg_->move (pong_msg);
     errno_assert (rc == 0);
-    msg_->set_flags (msg_t::command);
-
-    memcpy (msg_->data (), "\4PONG", 5);
 
     rc = mechanism->encode (msg_);
     next_msg = &stream_engine_t::pull_and_encode;
@@ -1076,7 +1075,8 @@ int zmq::stream_engine_t::process_heartbeat_message (msg_t *msg_)
     if (memcmp (msg_->data (), "\4PING", 5) == 0) {
         uint16_t remote_heartbeat_ttl;
         // Get the remote heartbeat TTL to setup the timer
-        memcpy (&remote_heartbeat_ttl, (uint8_t *) msg_->data () + 5, 2);
+        memcpy (&remote_heartbeat_ttl,
+                static_cast<uint8_t *> (msg_->data ()) + 5, 2);
         remote_heartbeat_ttl = ntohs (remote_heartbeat_ttl);
         // The remote heartbeat is in 10ths of a second
         // so we multiply it by 100 to get the timer interval in ms.
@@ -1087,9 +1087,41 @@ int zmq::stream_engine_t::process_heartbeat_message (msg_t *msg_)
             has_ttl_timer = true;
         }
 
+        //  As per ZMTP 3.1 the PING command might contain an up to 16 bytes
+        //  context which needs to be PONGed back, so build the pong message
+        //  here and store it. Truncate it if it's too long.
+        //  Given the engine goes straight to out_event, sequential PINGs will
+        //  not be a problem.
+        size_t context_len = msg_->size () - 7 > 16 ? 16 : msg_->size () - 7;
+        int rc = pong_msg.init_size (5 + context_len);
+        errno_assert (rc == 0);
+        pong_msg.set_flags (msg_t::command);
+        memcpy (pong_msg.data (), "\4PONG", 5);
+        if (context_len > 0)
+            memcpy ((static_cast<uint8_t *> (pong_msg.data ())) + 5,
+                    (static_cast<uint8_t *> (msg_->data ())) + 7, context_len);
+
         next_msg = &stream_engine_t::produce_pong_message;
         out_event ();
     }
+
+    return 0;
+}
+
+int zmq::stream_engine_t::process_command_message (msg_t *msg_)
+{
+    const uint8_t cmd_name_size =
+      *(static_cast<const uint8_t *> (msg_->data ()));
+    //  Malformed command
+    if (msg_->size () < cmd_name_size + sizeof (cmd_name_size))
+        return -1;
+
+    const uint8_t *cmd_name =
+      (static_cast<const uint8_t *> (msg_->data ())) + 1;
+    if (cmd_name_size == 4
+        && (memcmp (cmd_name, "PING", cmd_name_size) == 0
+            || memcmp (cmd_name, "PONG", cmd_name_size) == 0))
+        return process_heartbeat_message (msg_);
 
     return 0;
 }

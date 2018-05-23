@@ -66,7 +66,7 @@ zmq::tcp_listener_t::tcp_listener_t (io_thread_t *io_thread_,
     own_t (io_thread_, options_),
     io_object_t (io_thread_),
     s (retired_fd),
-    handle ((handle_t) NULL),
+    handle (static_cast<handle_t> (NULL)),
     socket (socket_)
 {
 }
@@ -87,7 +87,7 @@ void zmq::tcp_listener_t::process_plug ()
 void zmq::tcp_listener_t::process_term (int linger_)
 {
     rm_fd (handle);
-    handle = (handle_t) NULL;
+    handle = static_cast<handle_t> (NULL);
     close ();
     own_t::process_term (linger_);
 }
@@ -131,7 +131,7 @@ void zmq::tcp_listener_t::in_event ()
     session->inc_seqnum ();
     launch_child (session);
     send_attach (session, engine, false);
-    socket->event_accepted (endpoint, (int) fd);
+    socket->event_accepted (endpoint, fd);
 }
 
 void zmq::tcp_listener_t::close ()
@@ -157,14 +157,14 @@ int zmq::tcp_listener_t::get_address (std::string &addr_)
 #else
     socklen_t sl = sizeof (ss);
 #endif
-    int rc = getsockname (s, (struct sockaddr *) &ss, &sl);
+    int rc = getsockname (s, reinterpret_cast<struct sockaddr *> (&ss), &sl);
 
     if (rc != 0) {
         addr_.clear ();
         return rc;
     }
 
-    tcp_address_t addr ((struct sockaddr *) &ss, sl);
+    tcp_address_t addr (reinterpret_cast<struct sockaddr *> (&ss), sl);
     return addr.to_string (addr_);
 }
 
@@ -195,20 +195,10 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
         s = open_socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
     }
 
-#ifdef ZMQ_HAVE_WINDOWS
-    if (s == INVALID_SOCKET) {
-        errno = wsa_error_to_errno (WSAGetLastError ());
+    if (s == retired_fd) {
         return -1;
     }
-#if !defined _WIN32_WCE && !defined ZMQ_HAVE_WINDOWS_UWP
-    //  On Windows, preventing sockets to be inherited by child processes.
-    BOOL brc = SetHandleInformation ((HANDLE) s, HANDLE_FLAG_INHERIT, 0);
-    win_assert (brc);
-#endif
-#else
-    if (s == -1)
-        return -1;
-#endif
+    make_socket_noninheritable (s);
 
     //  On some systems, IPv4 mapping in IPv6 sockets is disabled by default.
     //  Switch it on in such cases.
@@ -236,8 +226,8 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
     //  Allow reusing of the address.
     int flag = 1;
 #ifdef ZMQ_HAVE_WINDOWS
-    rc = setsockopt (s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *) &flag,
-                     sizeof (int));
+    rc = setsockopt (s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char *> (&flag), sizeof (int));
     wsa_assert (rc != SOCKET_ERROR);
 #elif defined ZMQ_HAVE_VXWORKS
     rc = setsockopt (s, SOL_SOCKET, SO_REUSEADDR, (char *) &flag, sizeof (int));
@@ -302,38 +292,25 @@ zmq::fd_t zmq::tcp_listener_t::accept ()
 #if defined ZMQ_HAVE_SOCK_CLOEXEC && defined HAVE_ACCEPT4
     fd_t sock = ::accept4 (s, (struct sockaddr *) &ss, &ss_len, SOCK_CLOEXEC);
 #else
-    fd_t sock = ::accept (s, (struct sockaddr *) &ss, &ss_len);
+    fd_t sock =
+      ::accept (s, reinterpret_cast<struct sockaddr *> (&ss), &ss_len);
 #endif
 
+    if (sock == retired_fd) {
 #ifdef ZMQ_HAVE_WINDOWS
-    if (sock == INVALID_SOCKET) {
         const int last_error = WSAGetLastError ();
         wsa_assert (last_error == WSAEWOULDBLOCK || last_error == WSAECONNRESET
                     || last_error == WSAEMFILE || last_error == WSAENOBUFS);
-        return retired_fd;
-    }
-#if !defined _WIN32_WCE && !defined ZMQ_HAVE_WINDOWS_UWP
-    //  On Windows, preventing sockets to be inherited by child processes.
-    BOOL brc = SetHandleInformation ((HANDLE) sock, HANDLE_FLAG_INHERIT, 0);
-    win_assert (brc);
-#endif
 #else
-    if (sock == -1) {
         errno_assert (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR
                       || errno == ECONNABORTED || errno == EPROTO
                       || errno == ENOBUFS || errno == ENOMEM || errno == EMFILE
                       || errno == ENFILE);
+#endif
         return retired_fd;
     }
-#endif
 
-#if (!defined ZMQ_HAVE_SOCK_CLOEXEC || !defined HAVE_ACCEPT4)                  \
-  && defined FD_CLOEXEC
-    //  Race condition can cause socket not to be closed (if fork happens
-    //  between accept and this point).
-    int rc = fcntl (sock, F_SETFD, FD_CLOEXEC);
-    errno_assert (rc != -1);
-#endif
+    make_socket_noninheritable (sock);
 
     if (!options.tcp_accept_filters.empty ()) {
         bool matched = false;

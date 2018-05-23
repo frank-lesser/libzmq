@@ -30,6 +30,8 @@
 #ifndef __ZMQ_BLOB_HPP_INCLUDED__
 #define __ZMQ_BLOB_HPP_INCLUDED__
 
+#include "err.hpp"
+
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
@@ -40,7 +42,18 @@
 #define ZMQ_PUSH_OR_EMPLACE_BACK emplace_back
 #define ZMQ_MOVE(x) std::move (x)
 #else
+#if defined __SUNPRO_CC
+template <typename K, typename V>
+std::pair<const K, V> make_pair_fix_const (const K &k, const V &v)
+{
+    return std::pair<const K, V> (k, v);
+}
+
+#define ZMQ_MAP_INSERT_OR_EMPLACE(k, v) insert (make_pair_fix_const (k, v))
+#else
 #define ZMQ_MAP_INSERT_OR_EMPLACE(k, v) insert (std::make_pair (k, v))
+#endif
+
 #define ZMQ_PUSH_OR_EMPLACE_BACK push_back
 #define ZMQ_MOVE(x) (x)
 #endif
@@ -61,20 +74,22 @@ struct blob_t
     blob_t () : data_ (0), size_ (0), owned_ (true) {}
 
     //  Creates a blob_t of a given size, with uninitialized content.
-    blob_t (const size_t size) :
-        data_ ((unsigned char *) malloc (size)),
+    explicit blob_t (const size_t size) :
+        data_ (static_cast<unsigned char *> (malloc (size))),
         size_ (size),
         owned_ (true)
     {
+        alloc_assert (data_);
     }
 
     //  Creates a blob_t of a given size, an initializes content by copying
     // from another buffer.
     blob_t (const unsigned char *const data, const size_t size) :
-        data_ ((unsigned char *) malloc (size)),
+        data_ (static_cast<unsigned char *> (malloc (size))),
         size_ (size),
         owned_ (true)
     {
+        alloc_assert (data_);
         memcpy (data_, data, size_);
     }
 
@@ -109,7 +124,8 @@ struct blob_t
     void set_deep_copy (blob_t const &other)
     {
         clear ();
-        data_ = (unsigned char *) malloc (other.size_);
+        data_ = static_cast<unsigned char *> (malloc (other.size_));
+        alloc_assert (data_);
         size_ = other.size_;
         owned_ = true;
         memcpy (data_, other.data_, size_);
@@ -119,7 +135,8 @@ struct blob_t
     void set (const unsigned char *const data, const size_t size)
     {
         clear ();
-        data_ = (unsigned char *) malloc (size);
+        data_ = static_cast<unsigned char *> (malloc (size));
+        alloc_assert (data_);
         size_ = size;
         owned_ = true;
         memcpy (data_, data, size_);

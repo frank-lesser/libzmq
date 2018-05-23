@@ -60,6 +60,10 @@
 #endif
 #endif
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 zmq::tcp_connecter_t::tcp_connecter_t (class io_thread_t *io_thread_,
                                        class session_base_t *session_,
                                        const options_t &options_,
@@ -69,7 +73,7 @@ zmq::tcp_connecter_t::tcp_connecter_t (class io_thread_t *io_thread_,
     io_object_t (io_thread_),
     addr (addr_),
     s (retired_fd),
-    handle ((handle_t) NULL),
+    handle (static_cast<handle_t> (NULL)),
     delayed_start (delayed_start_),
     connect_timer_started (false),
     reconnect_timer_started (false),
@@ -166,7 +170,7 @@ void zmq::tcp_connecter_t::out_event ()
 void zmq::tcp_connecter_t::rm_handle ()
 {
     rm_fd (handle);
-    handle = (handle_t) NULL;
+    handle = static_cast<handle_t> (NULL);
 }
 
 void zmq::tcp_connecter_t::timer_event (int id_)
@@ -262,7 +266,7 @@ int zmq::tcp_connecter_t::open ()
         return -1;
     }
     zmq_assert (addr->resolved.tcp_addr != NULL);
-    tcp_address_t *const tcp_addr = addr->resolved.tcp_addr;
+    const tcp_address_t *const tcp_addr = addr->resolved.tcp_addr;
 
     //  Create the socket.
     s = open_socket (tcp_addr->family (), SOCK_STREAM, IPPROTO_TCP);
@@ -279,15 +283,9 @@ int zmq::tcp_connecter_t::open ()
         s = open_socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
     }
 
-#ifdef ZMQ_HAVE_WINDOWS
-    if (s == INVALID_SOCKET) {
-        errno = wsa_error_to_errno (WSAGetLastError ());
+    if (s == retired_fd) {
         return -1;
     }
-#else
-    if (s == -1)
-        return -1;
-#endif
 
     //  On some systems, IPv4 mapping in IPv6 sockets is disabled by default.
     //  Switch it on in such cases.
@@ -325,8 +323,8 @@ int zmq::tcp_connecter_t::open ()
         //  using the same source port on the client.
         int flag = 1;
 #ifdef ZMQ_HAVE_WINDOWS
-        rc = setsockopt (s, SOL_SOCKET, SO_REUSEADDR, (const char *) &flag,
-                         sizeof (int));
+        rc = setsockopt (s, SOL_SOCKET, SO_REUSEADDR,
+                         reinterpret_cast<const char *> (&flag), sizeof (int));
         wsa_assert (rc != SOCKET_ERROR);
 #elif defined ZMQ_HAVE_VXWORKS
         rc = setsockopt (s, SOL_SOCKET, SO_REUSEADDR, (char *) &flag,
@@ -383,7 +381,8 @@ zmq::fd_t zmq::tcp_connecter_t::connect ()
     socklen_t len = sizeof err;
 #endif
 
-    const int rc = getsockopt (s, SOL_SOCKET, SO_ERROR, (char *) &err, &len);
+    const int rc = getsockopt (s, SOL_SOCKET, SO_ERROR,
+                               reinterpret_cast<char *> (&err), &len);
 
     //  Assert if the error was caused by 0MQ bug.
     //  Networking problems are OK. No need to assert.
@@ -403,8 +402,13 @@ zmq::fd_t zmq::tcp_connecter_t::connect ()
         err = errno;
     if (err != 0) {
         errno = err;
+#if !defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE
         errno_assert (errno != EBADF && errno != ENOPROTOOPT
                       && errno != ENOTSOCK && errno != ENOBUFS);
+#else
+        errno_assert (errno != ENOPROTOOPT && errno != ENOTSOCK
+                      && errno != ENOBUFS);
+#endif
         return retired_fd;
     }
 #endif

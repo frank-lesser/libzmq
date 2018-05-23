@@ -29,13 +29,11 @@
 
 #include "precompiled.hpp"
 #include "poll.hpp"
-#if defined ZMQ_USE_POLL
+#if defined ZMQ_IOTHREAD_POLLER_USE_POLL
 
 #include <sys/types.h>
-#if !defined ZMQ_HAVE_WINDOWS
 #include <sys/time.h>
 #include <poll.h>
-#endif
 #include <algorithm>
 
 #include "poll.hpp"
@@ -155,15 +153,12 @@ void zmq::poll_t::loop ()
         }
 
         //  Wait for events.
-        int rc = poll (&pollset[0], pollset.size (), timeout ? timeout : -1);
-#ifdef ZMQ_HAVE_WINDOWS
-        wsa_assert (rc != SOCKET_ERROR);
-#else
+        int rc = poll (&pollset[0], static_cast<nfds_t> (pollset.size ()),
+                       timeout ? timeout : -1);
         if (rc == -1) {
             errno_assert (errno == EINTR);
             continue;
         }
-#endif
 
         //  If there are no events (i.e. it's a timeout) there's no point
         //  in checking the pollset.
